@@ -133,7 +133,7 @@ jobs:
             dist/sing-box=/usr/bin/sing-box
       - name: Upload to GitHub release
         run: |
-          gh release upload "v${{ needs.calculate_version.outputs.version }}" dist/*.deb
+          gh release upload "v${{ needs.calculate_version.outputs.version }}" dist/*.deb --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Upload artifact
