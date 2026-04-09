@@ -93,7 +93,7 @@ jobs:
       - name: Set build tags
         run: |
           set -xeuo pipefail
-          TAGS="$(cat release/DEFAULT_BUILD_TAGS),with_musl"
+          TAGS="$(cat release/DEFAULT_BUILD_TAGS),with_musl,with_v2ray_api"
           echo "BUILD_TAGS=${TAGS}" >> "${GITHUB_ENV}"
       - name: Set shared ldflags
         run: |
