@@ -14,6 +14,7 @@ type ShadowsocksInboundOptions struct {
 type ShadowsocksUser struct {
 	Name     string `json:"name"`
 	Password string `json:"password"`
+	InboundUserSpeedOptions
 }
 
 type ShadowsocksDestination struct {

@@ -9,6 +9,7 @@ import (
 	"github.com/sagernet/sing-box/adapter/inbound"
 	"github.com/sagernet/sing-box/common/listener"
 	"github.com/sagernet/sing-box/common/mux"
+	"github.com/sagernet/sing-box/common/ratelimit"
 	"github.com/sagernet/sing-box/common/tls"
 	"github.com/sagernet/sing-box/common/uot"
 	C "github.com/sagernet/sing-box/constant"
@@ -36,23 +37,29 @@ var _ adapter.TCPInjectableInbound = (*Inbound)(nil)
 
 type Inbound struct {
 	inbound.Adapter
-	ctx       context.Context
-	router    adapter.ConnectionRouterEx
-	logger    logger.ContextLogger
-	listener  *listener.Listener
-	service   *vmess.Service[int]
-	users     []option.VMessUser
-	tlsConfig tls.ServerConfig
-	transport adapter.V2RayServerTransport
+	ctx          context.Context
+	router       adapter.ConnectionRouterEx
+	logger       logger.ContextLogger
+	listener     *listener.Listener
+	service      *vmess.Service[int]
+	users        []option.VMessUser
+	userLimiters []*ratelimit.Limiters
+	tlsConfig    tls.ServerConfig
+	transport    adapter.V2RayServerTransport
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.VMessInboundOptions) (adapter.Inbound, error) {
+	userLimiters := make([]*ratelimit.Limiters, len(options.Users))
+	for i, u := range options.Users {
+		userLimiters[i] = ratelimit.NewLimiters(u.DownloadMbps, u.UploadMbps)
+	}
 	inbound := &Inbound{
-		Adapter: inbound.NewAdapter(C.TypeVMess, tag),
-		ctx:     ctx,
-		router:  uot.NewRouter(router, logger),
-		logger:  logger,
-		users:   options.Users,
+		Adapter:      inbound.NewAdapter(C.TypeVMess, tag),
+		ctx:          ctx,
+		router:       uot.NewRouter(router, logger),
+		logger:       logger,
+		users:        options.Users,
+		userLimiters: userLimiters,
 	}
 	var err error
 	inbound.router, err = mux.NewRouterWithOptions(inbound.router, logger, common.PtrValueOrDefault(options.Multiplex))
@@ -184,6 +191,10 @@ func (h *Inbound) newConnectionEx(ctx context.Context, conn net.Conn, metadata a
 	} else {
 		metadata.User = user
 	}
+	if l := h.userLimiters[userIndex]; l != nil {
+		metadata.DownloadRateLimiter = l.Download
+		metadata.UploadRateLimiter = l.Upload
+	}
 	h.logger.InfoContext(ctx, "[", user, "] inbound connection to ", metadata.Destination)
 	h.router.RouteConnectionEx(ctx, conn, metadata, onClose)
 }
@@ -201,6 +212,10 @@ func (h *Inbound) newPacketConnectionEx(ctx context.Context, conn N.PacketConn, 
 		user = F.ToString(userIndex)
 	} else {
 		metadata.User = user
+	}
+	if l := h.userLimiters[userIndex]; l != nil {
+		metadata.DownloadRateLimiter = l.Download
+		metadata.UploadRateLimiter = l.Upload
 	}
 	if metadata.Destination.Fqdn == packetaddr.SeqPacketMagicAddress {
 		metadata.Destination = M.Socksaddr{}

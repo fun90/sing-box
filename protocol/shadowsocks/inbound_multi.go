@@ -10,6 +10,7 @@ import (
 	"github.com/sagernet/sing-box/adapter/inbound"
 	"github.com/sagernet/sing-box/common/listener"
 	"github.com/sagernet/sing-box/common/mux"
+	"github.com/sagernet/sing-box/common/ratelimit"
 	"github.com/sagernet/sing-box/common/uot"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
@@ -35,13 +36,14 @@ var (
 
 type MultiInbound struct {
 	inbound.Adapter
-	ctx      context.Context
-	router   adapter.ConnectionRouterEx
-	logger   logger.ContextLogger
-	listener *listener.Listener
-	service  shadowsocks.MultiService[int]
-	users    []option.ShadowsocksUser
-	tracker  adapter.SSMTracker
+	ctx          context.Context
+	router       adapter.ConnectionRouterEx
+	logger       logger.ContextLogger
+	listener     *listener.Listener
+	service      shadowsocks.MultiService[int]
+	users        []option.ShadowsocksUser
+	userLimiters []*ratelimit.Limiters
+	tracker      adapter.SSMTracker
 }
 
 func newMultiInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.ShadowsocksInboundOptions) (*MultiInbound, error) {
@@ -95,6 +97,11 @@ func newMultiInbound(ctx context.Context, router adapter.Router, logger log.Cont
 	}
 	inbound.service = service
 	inbound.users = options.Users
+	userLimiters := make([]*ratelimit.Limiters, len(options.Users))
+	for i, u := range options.Users {
+		userLimiters[i] = ratelimit.NewLimiters(u.DownloadMbps, u.UploadMbps)
+	}
+	inbound.userLimiters = userLimiters
 	inbound.listener = listener.New(listener.Options{
 		Context:                  ctx,
 		Logger:                   logger,
@@ -169,6 +176,12 @@ func (h *MultiInbound) newConnection(ctx context.Context, conn net.Conn, metadat
 	} else {
 		metadata.User = user
 	}
+	if userIndex < len(h.userLimiters) {
+		if l := h.userLimiters[userIndex]; l != nil {
+			metadata.DownloadRateLimiter = l.Download
+			metadata.UploadRateLimiter = l.Upload
+		}
+	}
 	h.logger.InfoContext(ctx, "[", user, "] inbound connection to ", metadata.Destination)
 	metadata.Inbound = h.Tag()
 	metadata.InboundType = h.Type()
@@ -191,6 +204,12 @@ func (h *MultiInbound) newPacketConnection(ctx context.Context, conn N.PacketCon
 		user = F.ToString(userIndex)
 	} else {
 		metadata.User = user
+	}
+	if userIndex < len(h.userLimiters) {
+		if l := h.userLimiters[userIndex]; l != nil {
+			metadata.DownloadRateLimiter = l.Download
+			metadata.UploadRateLimiter = l.Upload
+		}
 	}
 	ctx = log.ContextWithNewID(ctx)
 	h.logger.InfoContext(ctx, "[", user, "] inbound packet connection from ", metadata.Source)

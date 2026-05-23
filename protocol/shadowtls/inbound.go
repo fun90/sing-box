@@ -8,6 +8,7 @@ import (
 	"github.com/sagernet/sing-box/adapter/inbound"
 	"github.com/sagernet/sing-box/common/dialer"
 	"github.com/sagernet/sing-box/common/listener"
+	"github.com/sagernet/sing-box/common/ratelimit"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
@@ -26,10 +27,11 @@ func RegisterInbound(registry *inbound.Registry) {
 
 type Inbound struct {
 	inbound.Adapter
-	router   adapter.Router
-	logger   logger.ContextLogger
-	listener *listener.Listener
-	service  *shadowtls.Service
+	router       adapter.Router
+	logger       logger.ContextLogger
+	listener     *listener.Listener
+	service      *shadowtls.Service
+	userLimiters map[string]*ratelimit.Limiters
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.ShadowTLSInboundOptions) (adapter.Inbound, error) {
@@ -71,7 +73,7 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		Version:  options.Version,
 		Password: options.Password,
 		Users: common.Map(options.Users, func(it option.ShadowTLSUser) shadowtls.User {
-			return (shadowtls.User)(it)
+			return shadowtls.User{Name: it.Name, Password: it.Password}
 		}),
 		Handshake: shadowtls.HandshakeConfig{
 			Server: options.Handshake.ServerOptions.Build(),
@@ -87,6 +89,13 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		return nil, err
 	}
 	inbound.service = service
+	userLimiters := make(map[string]*ratelimit.Limiters, len(options.Users))
+	for _, u := range options.Users {
+		if l := ratelimit.NewLimiters(u.DownloadMbps, u.UploadMbps); l != nil {
+			userLimiters[u.Name] = l
+		}
+	}
+	inbound.userLimiters = userLimiters
 	inbound.listener = listener.New(listener.Options{
 		Context:           ctx,
 		Logger:            logger,
@@ -134,6 +143,10 @@ func (h *inboundHandler) NewConnectionEx(ctx context.Context, conn net.Conn, sou
 	if userName, _ := auth.UserFromContext[string](ctx); userName != "" {
 		metadata.User = userName
 		h.logger.InfoContext(ctx, "[", userName, "] inbound connection to ", metadata.Destination)
+		if l := h.userLimiters[userName]; l != nil {
+			metadata.DownloadRateLimiter = l.Download
+			metadata.UploadRateLimiter = l.Upload
+		}
 	} else {
 		h.logger.InfoContext(ctx, "inbound connection to ", metadata.Destination)
 	}

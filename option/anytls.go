@@ -12,6 +12,7 @@ type AnyTLSInboundOptions struct {
 type AnyTLSUser struct {
 	Name     string `json:"name,omitempty"`
 	Password string `json:"password,omitempty"`
+	InboundUserSpeedOptions
 }
 
 type AnyTLSOutboundOptions struct {

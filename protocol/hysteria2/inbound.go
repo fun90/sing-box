@@ -11,6 +11,7 @@ import (
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/inbound"
 	"github.com/sagernet/sing-box/common/listener"
+	"github.com/sagernet/sing-box/common/ratelimit"
 	"github.com/sagernet/sing-box/common/tls"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
@@ -36,6 +37,7 @@ type Inbound struct {
 	tlsConfig    tls.ServerConfig
 	service      *hysteria2.Service[int]
 	userNameList []string
+	userLimiters []*ratelimit.Limiters
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.Hysteria2InboundOptions) (adapter.Inbound, error) {
@@ -132,14 +134,17 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 	userList := make([]int, 0, len(options.Users))
 	userNameList := make([]string, 0, len(options.Users))
 	userPasswordList := make([]string, 0, len(options.Users))
+	userLimiters := make([]*ratelimit.Limiters, len(options.Users))
 	for index, user := range options.Users {
 		userList = append(userList, index)
 		userNameList = append(userNameList, user.Name)
 		userPasswordList = append(userPasswordList, user.Password)
+		userLimiters[index] = ratelimit.NewLimiters(user.DownloadMbps, user.UploadMbps)
 	}
 	service.UpdateUsers(userList, userPasswordList)
 	inbound.service = service
 	inbound.userNameList = userNameList
+	inbound.userLimiters = userLimiters
 	return inbound, nil
 }
 
@@ -162,6 +167,10 @@ func (h *Inbound) NewConnectionEx(ctx context.Context, conn net.Conn, source M.S
 	} else {
 		h.logger.InfoContext(ctx, "inbound connection to ", metadata.Destination)
 	}
+	if l := h.userLimiters[userID]; l != nil {
+		metadata.DownloadRateLimiter = l.Download
+		metadata.UploadRateLimiter = l.Upload
+	}
 	h.router.RouteConnectionEx(ctx, conn, metadata, onClose)
 }
 
@@ -183,6 +192,10 @@ func (h *Inbound) NewPacketConnectionEx(ctx context.Context, conn N.PacketConn, 
 		h.logger.InfoContext(ctx, "[", userName, "] inbound packet connection to ", metadata.Destination)
 	} else {
 		h.logger.InfoContext(ctx, "inbound packet connection to ", metadata.Destination)
+	}
+	if l := h.userLimiters[userID]; l != nil {
+		metadata.DownloadRateLimiter = l.Download
+		metadata.UploadRateLimiter = l.Upload
 	}
 	h.router.RoutePacketConnectionEx(ctx, conn, metadata, onClose)
 }

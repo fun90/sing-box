@@ -12,6 +12,7 @@ type VMessUser struct {
 	Name    string `json:"name"`
 	UUID    string `json:"uuid"`
 	AlterId int    `json:"alterId,omitempty"`
+	InboundUserSpeedOptions
 }
 
 type VMessOutboundOptions struct {

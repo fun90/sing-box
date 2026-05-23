@@ -24,6 +24,7 @@ type HysteriaUser struct {
 	Name       string `json:"name,omitempty"`
 	Auth       []byte `json:"auth,omitempty"`
 	AuthString string `json:"auth_str,omitempty"`
+	InboundUserSpeedOptions
 }
 
 type HysteriaOutboundOptions struct {

@@ -9,6 +9,7 @@ import (
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	M "github.com/sagernet/sing/common/metadata"
+	"golang.org/x/time/rate"
 )
 
 type Inbound interface {
@@ -47,8 +48,10 @@ type InboundContext struct {
 	Network     string
 	Source      M.Socksaddr
 	Destination M.Socksaddr
-	User        string
-	Outbound    string
+	User                string
+	DownloadRateLimiter *rate.Limiter
+	UploadRateLimiter   *rate.Limiter
+	Outbound            string
 
 	// sniffer
 

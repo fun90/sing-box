@@ -30,6 +30,7 @@ type Hysteria2Obfs struct {
 type Hysteria2User struct {
 	Name     string `json:"name,omitempty"`
 	Password string `json:"password,omitempty"`
+	InboundUserSpeedOptions
 }
 
 type _Hysteria2Masquerade struct {

@@ -13,6 +13,7 @@ type TrojanInboundOptions struct {
 type TrojanUser struct {
 	Name     string `json:"name"`
 	Password string `json:"password"`
+	InboundUserSpeedOptions
 }
 
 type TrojanOutboundOptions struct {

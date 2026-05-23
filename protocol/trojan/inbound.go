@@ -9,6 +9,7 @@ import (
 	"github.com/sagernet/sing-box/adapter/inbound"
 	"github.com/sagernet/sing-box/common/listener"
 	"github.com/sagernet/sing-box/common/mux"
+	"github.com/sagernet/sing-box/common/ratelimit"
 	"github.com/sagernet/sing-box/common/tls"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
@@ -36,6 +37,7 @@ type Inbound struct {
 	listener                 *listener.Listener
 	service                  *trojan.Service[int]
 	users                    []option.TrojanUser
+	userLimiters             []*ratelimit.Limiters
 	tlsConfig                tls.ServerConfig
 	fallbackAddr             M.Socksaddr
 	fallbackAddrTLSNextProto map[string]M.Socksaddr
@@ -43,11 +45,16 @@ type Inbound struct {
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.TrojanInboundOptions) (adapter.Inbound, error) {
+	userLimiters := make([]*ratelimit.Limiters, len(options.Users))
+	for i, u := range options.Users {
+		userLimiters[i] = ratelimit.NewLimiters(u.DownloadMbps, u.UploadMbps)
+	}
 	inbound := &Inbound{
-		Adapter: inbound.NewAdapter(C.TypeTrojan, tag),
-		router:  router,
-		logger:  logger,
-		users:   options.Users,
+		Adapter:      inbound.NewAdapter(C.TypeTrojan, tag),
+		router:       router,
+		logger:       logger,
+		users:        options.Users,
+		userLimiters: userLimiters,
 	}
 	if options.TLS != nil {
 		tlsConfig, err := tls.NewServerWithOptions(tls.ServerOptions{
@@ -195,6 +202,10 @@ func (h *Inbound) newConnection(ctx context.Context, conn net.Conn, metadata ada
 	} else {
 		metadata.User = user
 	}
+	if l := h.userLimiters[userIndex]; l != nil {
+		metadata.DownloadRateLimiter = l.Download
+		metadata.UploadRateLimiter = l.Upload
+	}
 	h.logger.InfoContext(ctx, "[", user, "] inbound connection to ", metadata.Destination)
 	h.router.RouteConnectionEx(ctx, conn, metadata, onClose)
 }
@@ -212,6 +223,10 @@ func (h *Inbound) newPacketConnection(ctx context.Context, conn N.PacketConn, me
 		user = F.ToString(userIndex)
 	} else {
 		metadata.User = user
+	}
+	if l := h.userLimiters[userIndex]; l != nil {
+		metadata.DownloadRateLimiter = l.Download
+		metadata.UploadRateLimiter = l.Upload
 	}
 	h.logger.InfoContext(ctx, "[", user, "] inbound packet connection to ", metadata.Destination)
 	h.router.RoutePacketConnectionEx(ctx, conn, metadata, onClose)

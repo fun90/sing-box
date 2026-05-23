@@ -13,6 +13,7 @@ import (
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/dialer"
+	"github.com/sagernet/sing-box/common/ratelimit"
 	"github.com/sagernet/sing-box/common/tlsfragment"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing/common"
@@ -127,6 +128,9 @@ func (m *ConnectionManager) NewConnection(ctx context.Context, this N.Dialer, co
 	}
 	if metadata.TLSFragment || metadata.TLSRecordFragment {
 		remoteConn = tf.NewConn(remoteConn, ctx, metadata.TLSFragment, metadata.TLSRecordFragment, metadata.TLSFragmentFallbackDelay)
+	}
+	if metadata.DownloadRateLimiter != nil || metadata.UploadRateLimiter != nil {
+		conn = ratelimit.WrapConn(ctx, conn, metadata.UploadRateLimiter, metadata.DownloadRateLimiter)
 	}
 	var done atomic.Bool
 	if m.kickWriteHandshake(ctx, conn, remoteConn, false, &done, onClose) {
@@ -249,6 +253,9 @@ func (m *ConnectionManager) NewPacketConnection(ctx context.Context, this N.Dial
 	}
 	if udpTimeout > 0 {
 		ctx, conn = canceler.NewPacketConn(ctx, conn, udpTimeout)
+	}
+	if metadata.DownloadRateLimiter != nil || metadata.UploadRateLimiter != nil {
+		conn = ratelimit.WrapPacketConn(ctx, conn, metadata.UploadRateLimiter, metadata.DownloadRateLimiter)
 	}
 	destination := bufio.NewPacketConn(remotePacketConn)
 	var done atomic.Bool

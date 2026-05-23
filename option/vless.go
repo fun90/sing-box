@@ -12,6 +12,7 @@ type VLESSUser struct {
 	Name string `json:"name"`
 	UUID string `json:"uuid"`
 	Flow string `json:"flow,omitempty"`
+	InboundUserSpeedOptions
 }
 
 type VLESSOutboundOptions struct {
