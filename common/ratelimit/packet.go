@@ -28,6 +28,10 @@ func WrapPacketConn(ctx context.Context, conn N.PacketConn, upload, download *ra
 	}
 }
 
+func (c *rateLimitedPacketConn) Upstream() any {
+	return c.PacketConn
+}
+
 func (c *rateLimitedPacketConn) ReadPacket(buffer *buf.Buffer) (M.Socksaddr, error) {
 	destination, err := c.PacketConn.ReadPacket(buffer)
 	if err == nil && c.upload != nil && buffer.Len() > 0 {
