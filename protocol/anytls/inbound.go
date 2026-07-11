@@ -3,10 +3,13 @@ package anytls
 import (
 	"context"
 	"net"
+	"os"
 	"strings"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/inbound"
+	"github.com/sagernet/sing-box/common/accountquota"
+	"github.com/sagernet/sing-box/common/connlimit"
 	"github.com/sagernet/sing-box/common/listener"
 	"github.com/sagernet/sing-box/common/ratelimit"
 	"github.com/sagernet/sing-box/common/tls"
@@ -37,6 +40,8 @@ type Inbound struct {
 	listener     *listener.Listener
 	service      *anytls.Service
 	userLimiters map[string]*ratelimit.Limiters
+	connLimiters map[string]*connlimit.Limiter
+	accountGuard *accountquota.Guard
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.AnyTLSInboundOptions) (adapter.Inbound, error) {
@@ -72,12 +77,16 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 	}
 	inbound.service = service
 	userLimiters := make(map[string]*ratelimit.Limiters, len(options.Users))
+	connLimiters := make(map[string]*connlimit.Limiter, len(options.Users))
 	for _, u := range options.Users {
 		if l := ratelimit.NewLimiters(u.DownloadMbps, u.UploadMbps); l != nil {
 			userLimiters[u.Name] = l
 		}
+		connLimiters[u.Name] = connlimit.New(u.MaxIPs, u.MaxConnections)
 	}
 	inbound.userLimiters = userLimiters
+	inbound.connLimiters = connLimiters
+	inbound.accountGuard = accountquota.Global(ctx, logger)
 	inbound.listener = listener.New(listener.Options{
 		Context:           ctx,
 		Logger:            logger,
@@ -140,6 +149,13 @@ func (h *inboundHandler) NewConnectionEx(ctx context.Context, conn net.Conn, sou
 			metadata.DownloadRateLimiter = l.Download
 			metadata.UploadRateLimiter = l.Upload
 		}
+		allowed, wrapped, reason := connlimit.CheckAndTrack(h.connLimiters[userName], h.accountGuard, userName, metadata.Source, onClose)
+		if !allowed {
+			h.logger.InfoContext(ctx, "[", userName, "] connection rejected: ", reason)
+			N.CloseOnHandshakeFailure(conn, onClose, os.ErrPermission)
+			return
+		}
+		onClose = wrapped
 	} else {
 		h.logger.InfoContext(ctx, "inbound connection to ", metadata.Destination)
 	}

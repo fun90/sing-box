@@ -7,6 +7,8 @@ import (
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/inbound"
+	"github.com/sagernet/sing-box/common/accountquota"
+	"github.com/sagernet/sing-box/common/connlimit"
 	"github.com/sagernet/sing-box/common/listener"
 	"github.com/sagernet/sing-box/common/mux"
 	"github.com/sagernet/sing-box/common/ratelimit"
@@ -42,6 +44,8 @@ type Inbound struct {
 	listener     *listener.Listener
 	users        []option.VLESSUser
 	userLimiters []*ratelimit.Limiters
+	connLimiters []*connlimit.Limiter
+	accountGuard *accountquota.Guard
 	service      *vless.Service[int]
 	tlsConfig    tls.ServerConfig
 	transport    adapter.V2RayServerTransport
@@ -49,8 +53,10 @@ type Inbound struct {
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.VLESSInboundOptions) (adapter.Inbound, error) {
 	userLimiters := make([]*ratelimit.Limiters, len(options.Users))
+	connLimiters := make([]*connlimit.Limiter, len(options.Users))
 	for i, u := range options.Users {
 		userLimiters[i] = ratelimit.NewLimiters(u.DownloadMbps, u.UploadMbps)
+		connLimiters[i] = connlimit.New(u.MaxIPs, u.MaxConnections)
 	}
 	inbound := &Inbound{
 		Adapter:      inbound.NewAdapter(C.TypeVLESS, tag),
@@ -59,6 +65,8 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		logger:       logger,
 		users:        options.Users,
 		userLimiters: userLimiters,
+		connLimiters: connLimiters,
+		accountGuard: accountquota.Global(ctx, logger),
 	}
 	var err error
 	inbound.router, err = mux.NewRouterWithOptions(inbound.router, logger, common.PtrValueOrDefault(options.Multiplex))
@@ -189,6 +197,13 @@ func (h *Inbound) newConnectionEx(ctx context.Context, conn net.Conn, metadata a
 		metadata.DownloadRateLimiter = l.Download
 		metadata.UploadRateLimiter = l.Upload
 	}
+	allowed, wrapped, reason := connlimit.CheckAndTrack(h.connLimiters[userIndex], h.accountGuard, user, metadata.Source, onClose)
+	if !allowed {
+		h.logger.InfoContext(ctx, "[", user, "] connection rejected: ", reason)
+		N.CloseOnHandshakeFailure(conn, onClose, os.ErrPermission)
+		return
+	}
+	onClose = wrapped
 	h.logger.InfoContext(ctx, "[", user, "] inbound connection to ", metadata.Destination)
 	h.router.RouteConnectionEx(ctx, conn, metadata, onClose)
 }
@@ -211,6 +226,13 @@ func (h *Inbound) newPacketConnectionEx(ctx context.Context, conn N.PacketConn, 
 		metadata.DownloadRateLimiter = l.Download
 		metadata.UploadRateLimiter = l.Upload
 	}
+	allowed, wrapped, reason := connlimit.CheckAndTrack(h.connLimiters[userIndex], h.accountGuard, user, metadata.Source, onClose)
+	if !allowed {
+		h.logger.InfoContext(ctx, "[", user, "] packet connection rejected: ", reason)
+		N.CloseOnHandshakeFailure(conn, onClose, os.ErrPermission)
+		return
+	}
+	onClose = wrapped
 	if metadata.Destination.Fqdn == packetaddr.SeqPacketMagicAddress {
 		metadata.Destination = M.Socksaddr{}
 		conn = packetaddr.NewConn(bufio.NewNetPacketConn(conn), metadata.Destination)

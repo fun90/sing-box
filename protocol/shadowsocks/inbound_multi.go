@@ -8,6 +8,8 @@ import (
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/inbound"
+	"github.com/sagernet/sing-box/common/accountquota"
+	"github.com/sagernet/sing-box/common/connlimit"
 	"github.com/sagernet/sing-box/common/listener"
 	"github.com/sagernet/sing-box/common/mux"
 	"github.com/sagernet/sing-box/common/ratelimit"
@@ -43,6 +45,8 @@ type MultiInbound struct {
 	service      shadowsocks.MultiService[int]
 	users        []option.ShadowsocksUser
 	userLimiters []*ratelimit.Limiters
+	connLimiters []*connlimit.Limiter
+	accountGuard *accountquota.Guard
 	tracker      adapter.SSMTracker
 }
 
@@ -98,10 +102,14 @@ func newMultiInbound(ctx context.Context, router adapter.Router, logger log.Cont
 	inbound.service = service
 	inbound.users = options.Users
 	userLimiters := make([]*ratelimit.Limiters, len(options.Users))
+	connLimiters := make([]*connlimit.Limiter, len(options.Users))
 	for i, u := range options.Users {
 		userLimiters[i] = ratelimit.NewLimiters(u.DownloadMbps, u.UploadMbps)
+		connLimiters[i] = connlimit.New(u.MaxIPs, u.MaxConnections)
 	}
 	inbound.userLimiters = userLimiters
+	inbound.connLimiters = connLimiters
+	inbound.accountGuard = accountquota.Global(ctx, logger)
 	inbound.listener = listener.New(listener.Options{
 		Context:                  ctx,
 		Logger:                   logger,
@@ -182,6 +190,16 @@ func (h *MultiInbound) newConnection(ctx context.Context, conn net.Conn, metadat
 			metadata.UploadRateLimiter = l.Upload
 		}
 	}
+	if userIndex < len(h.connLimiters) {
+		allowed, wrapped, reason := connlimit.CheckAndTrack(h.connLimiters[userIndex], h.accountGuard, user, metadata.Source, nil)
+		if !allowed {
+			h.logger.InfoContext(ctx, "[", user, "] connection rejected: ", reason)
+			return os.ErrPermission
+		}
+		if wrapped != nil {
+			defer wrapped(nil)
+		}
+	}
 	h.logger.InfoContext(ctx, "[", user, "] inbound connection to ", metadata.Destination)
 	metadata.Inbound = h.Tag()
 	metadata.InboundType = h.Type()
@@ -209,6 +227,16 @@ func (h *MultiInbound) newPacketConnection(ctx context.Context, conn N.PacketCon
 		if l := h.userLimiters[userIndex]; l != nil {
 			metadata.DownloadRateLimiter = l.Download
 			metadata.UploadRateLimiter = l.Upload
+		}
+	}
+	if userIndex < len(h.connLimiters) {
+		allowed, wrapped, reason := connlimit.CheckAndTrack(h.connLimiters[userIndex], h.accountGuard, user, metadata.Source, nil)
+		if !allowed {
+			h.logger.InfoContext(ctx, "[", user, "] packet connection rejected: ", reason)
+			return os.ErrPermission
+		}
+		if wrapped != nil {
+			defer wrapped(nil)
 		}
 	}
 	ctx = log.ContextWithNewID(ctx)

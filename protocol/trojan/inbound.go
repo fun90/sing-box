@@ -7,6 +7,8 @@ import (
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/inbound"
+	"github.com/sagernet/sing-box/common/accountquota"
+	"github.com/sagernet/sing-box/common/connlimit"
 	"github.com/sagernet/sing-box/common/listener"
 	"github.com/sagernet/sing-box/common/mux"
 	"github.com/sagernet/sing-box/common/ratelimit"
@@ -38,6 +40,8 @@ type Inbound struct {
 	service                  *trojan.Service[int]
 	users                    []option.TrojanUser
 	userLimiters             []*ratelimit.Limiters
+	connLimiters             []*connlimit.Limiter
+	accountGuard             *accountquota.Guard
 	tlsConfig                tls.ServerConfig
 	fallbackAddr             M.Socksaddr
 	fallbackAddrTLSNextProto map[string]M.Socksaddr
@@ -46,8 +50,10 @@ type Inbound struct {
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.TrojanInboundOptions) (adapter.Inbound, error) {
 	userLimiters := make([]*ratelimit.Limiters, len(options.Users))
+	connLimiters := make([]*connlimit.Limiter, len(options.Users))
 	for i, u := range options.Users {
 		userLimiters[i] = ratelimit.NewLimiters(u.DownloadMbps, u.UploadMbps)
+		connLimiters[i] = connlimit.New(u.MaxIPs, u.MaxConnections)
 	}
 	inbound := &Inbound{
 		Adapter:      inbound.NewAdapter(C.TypeTrojan, tag),
@@ -55,6 +61,8 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		logger:       logger,
 		users:        options.Users,
 		userLimiters: userLimiters,
+		connLimiters: connLimiters,
+		accountGuard: accountquota.Global(ctx, logger),
 	}
 	if options.TLS != nil {
 		tlsConfig, err := tls.NewServerWithOptions(tls.ServerOptions{
@@ -206,6 +214,13 @@ func (h *Inbound) newConnection(ctx context.Context, conn net.Conn, metadata ada
 		metadata.DownloadRateLimiter = l.Download
 		metadata.UploadRateLimiter = l.Upload
 	}
+	allowed, wrapped, reason := connlimit.CheckAndTrack(h.connLimiters[userIndex], h.accountGuard, user, metadata.Source, onClose)
+	if !allowed {
+		h.logger.InfoContext(ctx, "[", user, "] connection rejected: ", reason)
+		N.CloseOnHandshakeFailure(conn, onClose, os.ErrPermission)
+		return
+	}
+	onClose = wrapped
 	h.logger.InfoContext(ctx, "[", user, "] inbound connection to ", metadata.Destination)
 	h.router.RouteConnectionEx(ctx, conn, metadata, onClose)
 }
@@ -228,6 +243,13 @@ func (h *Inbound) newPacketConnection(ctx context.Context, conn N.PacketConn, me
 		metadata.DownloadRateLimiter = l.Download
 		metadata.UploadRateLimiter = l.Upload
 	}
+	allowed, wrapped, reason := connlimit.CheckAndTrack(h.connLimiters[userIndex], h.accountGuard, user, metadata.Source, onClose)
+	if !allowed {
+		h.logger.InfoContext(ctx, "[", user, "] packet connection rejected: ", reason)
+		N.CloseOnHandshakeFailure(conn, onClose, os.ErrPermission)
+		return
+	}
+	onClose = wrapped
 	h.logger.InfoContext(ctx, "[", user, "] inbound packet connection to ", metadata.Destination)
 	h.router.RoutePacketConnectionEx(ctx, conn, metadata, onClose)
 }
