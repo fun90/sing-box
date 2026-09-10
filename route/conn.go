@@ -16,6 +16,7 @@ import (
 	"github.com/sagernet/sing-box/common/ratelimit"
 	"github.com/sagernet/sing-box/common/sniff"
 	"github.com/sagernet/sing-box/common/tlsfragment"
+	"github.com/sagernet/sing-box/common/tlsspoof"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
@@ -129,6 +130,17 @@ func (m *ConnectionManager) NewConnection(ctx context.Context, this N.Dialer, co
 	}
 	if metadata.TLSFragment || metadata.TLSRecordFragment {
 		remoteConn = tf.NewConn(remoteConn, ctx, metadata.TLSFragment, metadata.TLSRecordFragment, metadata.TLSFragmentFallbackDelay)
+	}
+	if metadata.TLSSpoof != "" {
+		spoofConn, spoofErr := tlsspoof.NewConn(remoteConn, metadata.TLSSpoofMethod, metadata.TLSSpoof)
+		if spoofErr != nil {
+			spoofErr = E.Cause(spoofErr, "tls_spoof setup")
+			remoteConn.Close()
+			N.CloseOnHandshakeFailure(conn, onClose, spoofErr)
+			m.logger.ErrorContext(ctx, spoofErr)
+			return
+		}
+		remoteConn = spoofConn
 	}
 	if metadata.DownloadRateLimiter != nil || metadata.UploadRateLimiter != nil {
 		conn = ratelimit.WrapConn(ctx, conn, metadata.UploadRateLimiter, metadata.DownloadRateLimiter)
